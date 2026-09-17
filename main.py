@@ -1,13 +1,20 @@
 import streamlit as st
 from backend.backend import data
-import numpy as np
 
-dataframe = np.random.randn(10, 20)
-st.dataframe(dataframe)
-st.subheader(data())
+DATA_TABLES = ["VYST_MO", "VUZ", "GRNTIRUB"]
 
-st.text_input("Your name", key="name")
+st.set_page_config(layout="wide")
 
-# You can access the value at any point with:
-if st.session_state.name:
-    st.text(f"Your name is {st.session_state.name}")
+table = st.selectbox("Выберите таблицу", options=DATA_TABLES)
+
+st.markdown(f"##### {table}")
+st.dataframe(data(table), hide_index=True)
+
+enable = st.checkbox("Enable camera")
+picture = None
+if enable:
+    picture = st.camera_input("Take a picture")
+
+if picture:
+    st.markdown(f"## It's you")
+    st.image(picture)
