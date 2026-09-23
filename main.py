@@ -1,4 +1,5 @@
 import streamlit as st
+import pandas as pd
 
 from backend.backend import (
     COLUMN_ORDER,
@@ -6,7 +7,7 @@ from backend.backend import (
     get_data,
     get_profiles_list,
     import_data,
-    make_db_copy
+    make_db_copy,
 )
 
 DATA_TABLES = ["VYST_MO", "VUZ", "GRNTIRUB"]
@@ -32,6 +33,14 @@ def load_data():
     profile = st.session_state.get("current_profile", MAIN_DB_NAME)
     st.session_state.data = get_data(table, profile)
 
+    
+def is_cell_empty(val):
+    if val is None or pd.isna(val):
+        return True
+    val_str = str(val).strip().lower()
+    if val_str == "" or val_str in ["nan", "none", "<na>"]:
+        return True
+    return False
 
 st.markdown("# Обработка данных о выставочных экспонатах.")
 profiles_list = get_profiles_list()
@@ -98,10 +107,43 @@ with col1:
 with col2:
     if st.button("Отправить изменения"):
         if enable_editing and "my_editor" in st.session_state:
-            import_data(
-                st.session_state.current_profile,
-                st.session_state.selected_table,
-                st.session_state.data,
-            )
-            load_data()
-            st.rerun()
+            
+            editor_state = st.session_state["my_editor"]
+            edited_rows = editor_state.get("edited_rows", {})  # Словарь {индекс_строки: {измененные_колонки}}
+            added_rows = editor_state.get("added_rows", [])    # На всякий случай оставляем и новые
+            
+            current_df = st.session_state.data
+            
+            is_valid = True
+            error_message = ""
+            
+            for i in range(len(current_df)):
+                kod_vuza = current_df.iloc[i]["Код ВУЗа"]
+                
+                if is_cell_empty(kod_vuza):
+                    row_series = current_df.iloc[i]
+                    has_any_data = any(
+                        not is_cell_empty(val) 
+                        for col, val in row_series.items() 
+                        if col != "Код ВУЗа"
+                    )
+                         
+                    if has_any_data:
+                        is_valid = False
+                        error_message = f"Ошибка: В строке №{i + 1} заполнена информация, но обязательное поле 'Код ВУЗа' оставлено пустым!"
+                        break
+            
+            if not is_valid:
+                st.error(error_message)
+            else:
+                try:
+                    import_data(
+                        st.session_state.current_profile,
+                        st.session_state.selected_table,
+                        st.session_state.data,
+                    )
+                    st.success("Изменения успешно сохранены!")
+                    load_data()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Критическая ошибка при записи в БД: {e}")          
