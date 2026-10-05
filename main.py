@@ -14,52 +14,90 @@ ROW_HEIGHT = 35
 
 
 def column_config(table):
-    # наименование НИР длинное (в среднем ~120 символов), поэтому столбец шире остальных
+    # длинные текстовые столбцы шире остальных (ширина в пикселях): наименование НИР
+    # в среднем ~120 символов, название экспоната ~65; информация о выставке —
+    # по самой длинной записи (196 символов), чтобы все записи помещались целиком
+    widths = {"subject": 800, "exponat": 600, "vystavki": 1380}
     return {
-        c: st.column_config.Column(l, width=800 if c == "subject" else None)
+        c: st.column_config.Column(l, width=widths.get(c))
         for c, l in db.LABELS[table].items()
     }
 
 
-GRNTI_LABEL = "Код ГРНТИ (до двух кодов, вводите только цифры)"
+GRNTI_LABEL = "Код ГРНТИ (только цифры)"
 
 
 def grnti_mask():
-    """Маска ввода ГРНТИ: точки (ХХ.ХХ.ХХ) и разделитель кодов «, » ставятся сами.
-    Скрипт ставит один обработчик на документ, поля находит по подписи."""
+    """Маска ввода ГРНТИ: точки (ХХ.ХХ.ХХ) и разделитель кодов «; » ставятся сами.
+    Скрипт ставит обработчики на документ (новая версия скрипта снимает старые),
+    поле находит по контейнеру rec_grnti в форме записи.
+    Здесь же стили страницы: без лишнего отступа снизу, а элементы со скриптами
+    (этот и прокрутка таблицы) скрыты, чтобы не занимали места."""
     st.html(
-        f"""<script>
+        f"""<style>
+        [data-testid="stMainBlockContainer"] {{ padding-bottom: 1rem; }}
+        [data-testid="stElementContainer"]:has(> [data-testid="stHtml"] > script) {{ display: none; }}
+        </style>
+        <script>
         (() => {{
-          if (window.grntiMask) return;
-          window.grntiMask = true;
-          const maxCodes = {{{GRNTI_LABEL!r}: 2}};
-          const format = (value, max) => {{
+          if (window.grntiMaskOff) window.grntiMaskOff();
+          const MAX_CODES = 3;  // в исходных данных бывает до трёх кодов
+          const format = (value, max, deleting) => {{
             const codes = [];
             for (const part of value.split(/[,;]/)) {{
               let d = part.replace(/\\D/g, "");
               while (d.length > 6) {{ codes.push(d.slice(0, 6)); d = d.slice(6); }}
               codes.push(d);
             }}
+            // при стирании пустой последний код убирается вместе с разделителем «; »
+            if (deleting) while (codes.length > 1 && !codes[codes.length - 1]) codes.pop();
             return codes.slice(0, max)
               .map(d => (d.match(/.{{1,2}}/g) || []).join("."))
-              .join(", ");
+              .join("; ");
           }};
           const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-          document.addEventListener("input", e => {{
+          const isMasked = el => el.tagName === "INPUT" && el.closest(".st-key-rec_grnti");
+          // значение до ввода: по нему видно, что стёрт только разделитель
+          const onFocus = e => {{
+            if (isMasked(e.target)) e.target.dataset.prev = e.target.value;
+          }};
+          const onInput = e => {{
             const el = e.target;
-            const max = maxCodes[el.getAttribute && el.getAttribute("aria-label")];
-            if (!max) return;
-            const formatted = format(el.value, max);
+            if (!isMasked(el)) return;
+            const max = MAX_CODES;
+            const deleting = (e.inputType || "").startsWith("delete");
+            let value = el.value, caret = el.selectionStart;
+            const prev = el.dataset.prev || "";
+            const digitsOf = v => v.replace(/\\D/g, "");
+            // стёрт только разделитель (точка или «; ») — стираем и соседнюю цифру,
+            // иначе маска сразу вернёт разделитель и курсор застрянет
+            if (deleting && value !== prev && digitsOf(value) === digitsOf(prev)) {{
+              const back = e.inputType === "deleteContentBackward";
+              let i = back ? caret - 1 : caret;
+              while (i >= 0 && i < value.length && !/\\d/.test(value[i])) i += back ? -1 : 1;
+              if (i >= 0 && i < value.length) {{
+                value = value.slice(0, i) + value.slice(i + 1);
+                if (back) caret = i;
+              }}
+            }}
+            const formatted = format(value, max, deleting);
+            el.dataset.prev = formatted;
             if (formatted === el.value) return;
             // курсор остаётся после того же количества цифр
-            const digits = el.value.slice(0, el.selectionStart).replace(/\\D/g, "").length;
+            const digits = digitsOf(value.slice(0, caret)).length;
             let pos = 0;
             for (let n = 0; pos < formatted.length && n < digits; pos++)
               if (/\\d/.test(formatted[pos])) n++;
             setValue.call(el, formatted);
             el.setSelectionRange(pos, pos);
             el.dispatchEvent(new Event("input", {{ bubbles: true }}));
-          }}, true);
+          }};
+          document.addEventListener("focusin", onFocus, true);
+          document.addEventListener("input", onInput, true);
+          window.grntiMaskOff = () => {{
+            document.removeEventListener("focusin", onFocus, true);
+            document.removeEventListener("input", onInput, true);
+          }};
         }})();
         </script>""",
         unsafe_allow_javascript=True,
@@ -69,7 +107,7 @@ def grnti_mask():
 def show(df, table, **kwargs):
     labels = db.LABELS[table]
     return st.dataframe(
-        df,
+        df.fillna(""),  # пустые значения — пустыми ячейками, а не «None»
         hide_index=True,
         column_order=list(labels),
         column_config=column_config(table),
@@ -84,41 +122,87 @@ def record_dialog(rec=None):
     codes = vuz["codvuz"].tolist()
     names = dict(zip(vuz["codvuz"], vuz["shortname"]))
     cur_vuz = int(rec["codvuz"]) if rec.get("codvuz") else None
+
+    def field(col, name):
+        # контейнер с ключом: по нему поле подсвечивается, если в нём ошибка
+        return col.container(key=f"rec_{name}")
+
+    # короткие поля по нескольку в ряд, чтобы форма помещалась на экране
+    c1, c2, c3 = st.columns([3, 1, 1])
     new = {
-        "codvuz": st.selectbox(
+        "codvuz": field(c1, "codvuz").selectbox(
             "Вуз",
             codes,
             codes.index(cur_vuz) if cur_vuz in codes else None,
             format_func=lambda c: f"{c} — {names[c]}",
+            placeholder="Выберите вуз",
         ),
-        "type": st.radio(
+        "type": field(c2, "type").radio(
             "Форма НИР",
             db.NIR_TYPES,
             db.NIR_TYPES.index(rec.get("type", "Е")),
             horizontal=True,
         ),
-        "regnumber": st.text_input("Рег. №", rec.get("regnumber") or ""),
-        "subject": st.text_area("Наименование НИР", rec.get("subject") or ""),
-        "grnti": st.text_input(
-            GRNTI_LABEL, rec.get("grnti") or "", placeholder="ХХ.ХХ.ХХ, ХХ.ХХ.ХХ"
+        "regnumber": field(c3, "regnumber").text_input(
+            "Рег. №", rec.get("regnumber") or ""
         ),
-        "bossname": st.text_input("Руководитель", rec.get("bossname") or ""),
-        "bosstitle": st.text_input("Должность", rec.get("bosstitle") or ""),
-        "exhitype": st.radio(
-            "Экспонат",
-            list(db.EXHIBIT_TYPES),
-            list(db.EXHIBIT_TYPES).index(rec.get("exhitype") or "Н"),
-            format_func=db.EXHIBIT_TYPES.get,
-            horizontal=True,
+        "subject": field(st, "subject").text_area(
+            "Наименование НИР", rec.get("subject") or "", height=68
         ),
-        "vystavki": st.text_area("Информация о выставке", rec.get("vystavki") or ""),
-        "exponat": st.text_input("Название экспоната", rec.get("exponat") or ""),
     }
-    if st.button("Сохранить", type="primary"):
+    c1, c2, c3 = st.columns([2, 2, 1])
+    new["grnti"] = field(c1, "grnti").text_input(
+        GRNTI_LABEL, rec.get("grnti") or "", placeholder="ХХ.ХХ.ХХ; ХХ.ХХ.ХХ"
+    )
+    new["bossname"] = field(c2, "bossname").text_input(
+        "Руководитель", rec.get("bossname") or ""
+    )
+    new["bosstitle"] = field(c3, "bosstitle").text_input(
+        "Должность", rec.get("bosstitle") or ""
+    )
+    new["exhitype"] = field(st, "exhitype").radio(
+        "Экспонат",
+        list(db.EXHIBIT_TYPES),
+        list(db.EXHIBIT_TYPES).index(rec.get("exhitype") or "Н"),
+        format_func=db.EXHIBIT_TYPES.get,
+        horizontal=True,
+    )
+    # если экспоната нет, поля сведений о нём скрыты (прежние значения записи сохраняются);
+    # если есть — оба поля обязательны
+    new["vystavki"], new["exponat"] = rec.get("vystavki"), rec.get("exponat")
+    if new["exhitype"] != "Н":
+        required = " *" if new["exhitype"] == "Е" else ""
+        c1, c2 = st.columns(2)
+        new["vystavki"] = field(c1, "vystavki").text_area(
+            "Информация о выставке" + required, rec.get("vystavki") or "", height=68
+        )
+        new["exponat"] = field(c2, "exponat").text_area(
+            "Название экспоната" + required, rec.get("exponat") or "", height=68
+        )
+    button, message = st.columns([1, 5], vertical_alignment="center")
+    if button.button("Сохранить", type="primary"):
         errors, rec_id = db.save_record(new, rec.get("id"))
-        for e in errors:
-            st.error(e)
-        if not errors:
+        if errors:
+            # одной плашкой справа от кнопки, чтобы форма не росла вниз
+            # о пустых полях — одной строкой (сами поля подсвечены), остальные ошибки списком
+            empty = [msg for fields, msg in errors if not new.get(fields[-1])]
+            lines = [msg for fields, msg in errors if new.get(fields[-1])]
+            lines += ["Заполните выделенные поля"] if empty else []
+            message.error("\n".join(f"- {line}" for line in lines))
+            # подсветка полей с ошибками
+            keys = {f".st-key-rec_{f}" for fields, _ in errors for f in fields}
+            message.html(
+                "<style>"
+                + ", ".join(
+                    f"{k} [data-testid=stTextInputRootElement], "
+                    f"{k} [data-testid=stTextAreaRootElement], "
+                    f"{k} [data-testid=stSelectbox] > div:has(input) > div"
+                    for k in keys
+                )
+                + " { box-shadow: inset 0 0 0 1px #ff4b4b;"
+                " background-color: rgba(255, 75, 75, 0.12) !important; }</style>"
+            )
+        else:
             st.session_state.select_id = rec_id  # курсор на добавленную/изменённую запись
             st.rerun()
 
@@ -165,43 +249,51 @@ def group_dialog(ids, flt, picked):
 @st.dialog("Фильтр")
 def filter_dialog():
     flt = st.session_state.filters
-    geo_fields = db.GEO_FIELDS
-    geo = db.get_table("vuz")[list(geo_fields)].dropna()
-    names = db.vuz_names()
-    labels = {**db.LABELS["vuz"], "codvuz": "Вуз"}
+    vuz = db.get_table("vuz")
+    geo = vuz[list(db.GEO_FIELDS)].dropna()
+    # НИР с географией вуза: по строке на каждую рубрику записи
+    nir = db.get_table("vyst_mo")[["codvuz", "grnti", "exhitype"]]
+    nir = nir.assign(rubrics=nir["grnti"].apply(lambda v: sorted(db.record_rubrics(v))))
+    nir = nir.explode("rubrics").merge(geo, on="codvuz")
+    nir_fields = ("rubrics", "exhitype")  # поля, которые есть только у НИР
+    fields = (*db.GEO_FIELDS, *nir_fields)
+
+    vuz_names, rubrics = db.vuz_names(), db.rubric_names()
+    labels = {
+        **db.LABELS["vuz"],
+        "codvuz": "Вуз",
+        "rubrics": "Рубрика ГРНТИ",
+        "exhitype": "Экспонат",
+    }
+    formats = {
+        "codvuz": lambda c: f"{c} — {vuz_names[c]}",
+        "rubrics": rubrics.get,
+        "exhitype": db.EXHIBIT_TYPES.get,
+    }
     p = f"flt{st.session_state.flt_n}"  # новые ключи при каждом открытии формы
-    sel = {f: st.session_state.get(f"{p}_{f}", flt.get(f, [])) for f in geo_fields}
+    sel = {f: st.session_state.get(f"{p}_{f}", flt.get(f, [])) for f in fields}
     new = {}
-    for f in geo_fields:
-        # варианты поля ограничены значениями, выбранными в остальных полях
-        rows = geo
-        for g in geo_fields:
+    for f in fields:
+        # варианты поля ограничены значениями, выбранными в остальных полях;
+        # пока рубрика и экспонат не выбраны, география берётся из всего справочника вузов
+        by_nir = f in nir_fields or any(sel[g] for g in nir_fields)
+        rows = nir if by_nir else geo
+        for g in fields:
             if g != f and sel[g]:
                 rows = rows[rows[g].isin(sel[g])]
-        options = rows[f].drop_duplicates().sort_values().tolist()
+        present = set(rows[f].dropna())
+        if f == "exhitype":
+            options = [e for e in db.EXHIBIT_TYPES if e in present]
+        else:
+            options = sorted(present)
         new[f] = st.multiselect(
             labels[f],
             options,
             [v for v in sel[f] if v in options],
-            format_func=(lambda c: f"{c} — {names[c]}") if f == "codvuz" else str,
+            format_func=formats.get(f, str),
             placeholder="Все",
             key=f"{p}_{f}",
         )
-    rubrics = db.rubric_names()
-    new["rubrics"] = st.multiselect(
-        "Рубрика ГРНТИ",
-        list(rubrics),
-        flt.get("rubrics", []),
-        format_func=rubrics.get,
-        placeholder="Все",
-    )
-    new["exhitype"] = st.multiselect(
-        "Экспонат",
-        list(db.EXHIBIT_TYPES),
-        flt.get("exhitype", []),
-        format_func=db.EXHIBIT_TYPES.get,
-        placeholder="Все",
-    )
     if st.button("Применить", type="primary"):
         st.session_state.filters = {k: v for k, v in new.items() if v}
         st.rerun()
@@ -301,6 +393,8 @@ def data_page():
     )
     selected = df.iloc[[r for r in event.selection.rows if r < len(df)]]
     one = selected.iloc[0].to_dict() if len(selected) == 1 else None
+    if one:  # пустые ячейки приходят как NaN — в форме это должны быть пустые поля
+        one = {k: None if v != v else v for k, v in one.items()}
 
     c = st.container(horizontal=True, gap="xsmall")
     if c.button("Фильтр", width="stretch"):

@@ -1,6 +1,7 @@
 """Создаёт БД data/database.db из Excel-файлов в папке tables.
 Запуск: python backend/convert.py (существующая БД будет пересоздана)."""
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -14,18 +15,46 @@ TABLES_DIR = BASE_DIR / "tables"
 KEY = ["codvuz", "type", "regnumber"]
 
 
+def next_regnumber(reg):
+    """Рег. № на 1 больше: 002 → 003, Л5 → Л6 (ведущие нули сохраняются)."""
+    m = re.fullmatch(r"(.*?)(\d+)(\D*)", reg)
+    if not m:  # в номере нет цифр
+        return reg + "1"
+    head, num, tail = m.groups()
+    return f"{head}{int(num) + 1:0{len(num)}d}{tail}"
+
+
+def normalize_grnti(value):
+    """Коды ГРНТИ через «; »: «02.61.45,27.35» → «02.61.45; 27.35».
+    Части кода, разделённые запятыми, собираются обратно: «29.19.49;29,19,45» → «29.19.49; 29.19.45».
+    """
+    if not isinstance(value, str):
+        return value
+    codes, building = [], False  # building — код собирается из частей без точек
+    for token in re.split(r"[;,\s]+", value.strip()):
+        if not token:
+            continue
+        if building and "." not in token and len(codes[-1].split(".")) < 3:
+            codes[-1] += "." + token
+        else:
+            codes.append(token)
+            building = "." not in token
+    return "; ".join(codes)
+
+
 def make_keys_unique(nir):
-    """Повторяющимся составным ключам (код вуза + форма + рег. №) дописывает к рег. номеру
-    суффикс -2, -3, ...; первая запись с таким ключом остаётся без изменений."""
+    """Повторяющимся составным ключам (код вуза + форма + рег. №) увеличивает рег. номер
+    на 1, пока ключ не станет уникальным; первая запись с таким ключом остаётся без изменений.
+    """
     taken = set(map(tuple, nir[KEY].values))
     for i in nir.index[nir.duplicated(KEY)]:
         vuz, type_, reg = nir.loc[i, KEY]
-        n = 2
-        while (vuz, type_, f"{reg}-{n}") in taken:
-            n += 1
-        nir.loc[i, "regnumber"] = f"{reg}-{n}"
-        taken.add((vuz, type_, f"{reg}-{n}"))
-        print(f"Повтор ключа {vuz}/{type_}/{reg}: рег. № заменён на {reg}-{n}")
+        new = next_regnumber(reg)
+        while (vuz, type_, new) in taken:
+            new = next_regnumber(new)
+        nir.loc[i, "regnumber"] = new
+        taken.add((vuz, type_, new))
+        print(f"Повтор ключа {vuz}/{type_}/{reg}: рег. № заменён на {new}")
     return nir
 
 
@@ -34,8 +63,10 @@ def convert():
     DB_PATH.unlink(missing_ok=True)
 
     nir = pd.read_excel(TABLES_DIR / "Vyst_mo.xlsx", dtype={"regnumber": str})
-    nir = nir.apply(lambda c: c.str.strip() if c.dtype == object else c)
+    for col in nir.select_dtypes(exclude="number"):  # пробелы по краям текста
+        nir[col] = nir[col].str.strip()
     nir = make_keys_unique(nir)
+    nir["grnti"] = nir["grnti"].map(normalize_grnti)
     fields = [c for c in nir.columns if c != "codvuz"]
 
     with sqlite3.connect(DB_PATH) as conn:

@@ -37,6 +37,7 @@ LABELS = {
     "grntirub": {"codrub": "Код", "rubrika": "Рубрика"},
 }
 NIR_FIELDS = list(LABELS["vyst_mo"])
+KEY = ["codvuz", "type", "regnumber"]
 NIR_TYPES = ["Е", "М"]
 EXHIBIT_TYPES = {"Е": "есть", "П": "планируется", "Н": "нет"}
 
@@ -133,42 +134,67 @@ def describe_filter(flt):
 
 
 def validate(rec, rec_id=None):
+    """Возвращает ошибки в виде [(поля, текст)]: поля — к каким полям относится ошибка."""
     errors = [
-        f"Не заполнено поле «{LABELS['vyst_mo'][f]}»"
+        ((f,), f"Не заполнено поле «{LABELS['vyst_mo'][f]}»")
         for f in ("codvuz", "type", "regnumber", "subject", "grnti", "exhitype")
         if not rec.get(f)
     ]
+    if rec.get("exhitype") == "Е":  # если экспонат есть, о нём должны быть сведения
+        errors += [
+            (("exhitype", f), f"Экспонат есть: заполните поле «{LABELS['vyst_mo'][f]}»")
+            for f in ("vystavki", "exponat")
+            if not rec.get(f)
+        ]
     if errors:
         return errors
     with connect() as conn:
         if not conn.execute(
             "SELECT 1 FROM vuz WHERE codvuz = ?", (rec["codvuz"],)
         ).fetchone():
-            errors.append("Вуза с таким кодом нет в справочнике")
+            errors.append((("codvuz",), "Вуза с таким кодом нет в справочнике"))
         if conn.execute(
             "SELECT 1 FROM vyst_mo WHERE codvuz = ? AND type = ? AND regnumber = ? AND id IS NOT ?",
             (rec["codvuz"], rec["type"], rec["regnumber"], rec_id),
         ).fetchone():
-            errors.append("Запись с таким ключом (вуз + форма + рег. №) уже есть")
+            errors.append(
+                (tuple(KEY), "Запись с таким ключом (вуз + форма + рег. №) уже есть")
+            )
         rubrics = {r for (r,) in conn.execute("SELECT codrub FROM grntirub")}
     for code in split_grnti(rec["grnti"]):
         if not re.fullmatch(r"\d{2}\.\d{2}(\.\d{2})?", code):
-            errors.append(f"Код ГРНТИ «{code}» должен иметь вид ХХ.ХХ.ХХ")
+            errors.append((("grnti",), f"Код ГРНТИ «{code}» должен иметь вид ХХ.ХХ.ХХ"))
         elif int(code[:2]) not in rubrics:
-            errors.append(f"Рубрики ГРНТИ {code[:2]} нет в справочнике")
+            errors.append((("grnti",), f"Рубрики ГРНТИ {code[:2]} нет в справочнике"))
     return errors
 
 
 def save_record(rec, rec_id=None):
-    """Добавляет (rec_id=None) или изменяет запись НИР. Возвращает (ошибки, id записи)."""
-    rec = {k: (str(v).strip() or None) if v is not None else None for k, v in rec.items()}
-    errors = validate(rec, rec_id)
+    """Добавляет (rec_id=None) или изменяет запись НИР.
+    Возвращает (ошибки, id записи), ошибки — [(поля, текст)].
+    Новая запись проверяется полностью. У существующей проверяются только изменённые поля:
+    пропуски и неточности исходных данных не мешают её сохранить."""
+    rec = {
+        k: None if v is None or v != v else str(v).strip() or None for k, v in rec.items()
+    }
+    old = {}
+    if rec_id is not None:
+        old = query("SELECT * FROM vyst_mo WHERE id = ?", (rec_id,)).iloc[0].to_dict()
+        old = {k: None if pd.isna(v) else str(v).strip() or None for k, v in old.items()}
+    if rec.get("grnti"):  # единый разделитель кодов ГРНТИ — «; »
+        rec["grnti"] = "; ".join(split_grnti(rec["grnti"]))
+    errors = [
+        (fields, msg)
+        for fields, msg in validate(rec, rec_id)
+        if rec_id is None or any(rec.get(f) != old.get(f) for f in fields)
+    ]
     if errors:
         return errors, None
     with connect() as conn:
-        (rec["shortname"],) = conn.execute(
+        row = conn.execute(
             "SELECT shortname FROM vuz WHERE codvuz = ?", (rec["codvuz"],)
         ).fetchone()
+        rec["shortname"] = row[0] if row else old.get("shortname")
         if rec_id is None:
             rec_id = conn.execute(
                 f"INSERT INTO vyst_mo ({', '.join(rec)}) VALUES ({', '.join('?' * len(rec))})",
