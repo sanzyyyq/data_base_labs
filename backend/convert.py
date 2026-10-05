@@ -1,76 +1,53 @@
-import os
+"""Создаёт БД data/database.db из Excel-файлов в папке tables.
+Запуск: python backend/convert.py (существующая БД будет пересоздана)."""
+
 import sqlite3
+from pathlib import Path
 
 import pandas as pd
 
-# --- НАСТРОЙКИ ---
-DB_NAME = "database.db"  # Имя создаваемой базы данных
-EXCEL_DIR = "tables"  # Папка, где лежат ваши 3 файла Excel
-# ------------------
+BASE_DIR = Path(__file__).parent
+DB_PATH = BASE_DIR / "data" / "database.db"
+TABLES_DIR = BASE_DIR / "tables"
 
 
-def excel_to_sqlite(folder_path, db_name):
-    # Подключаемся к базе данных
-    conn = sqlite3.connect(db_name)
+def convert():
+    DB_PATH.parent.mkdir(exist_ok=True)
+    DB_PATH.unlink(missing_ok=True)
 
-    if not os.path.isdir(folder_path):
-        print(
-            f"Ошибка: Папка {folder_path} не найдена. Создайте её и положите туда 3 файла."
-        )
-        return
+    nir = pd.read_excel(TABLES_DIR / "Vyst_mo.xlsx", dtype={"regnumber": str})
+    nir = nir.apply(lambda c: c.str.strip() if c.dtype == object else c)
+    fields = [c for c in nir.columns if c != "codvuz"]
 
-    # Получаем список всех Excel файлов в папке
-    files_to_process = [
-        os.path.join(folder_path, f)
-        for f in os.listdir(folder_path)
-        if f.endswith((".xlsx", ".xls"))
-    ]
-
-    print(f"Найдено файлов для обработки: {len(files_to_process)}")
-
-    for file_path in files_to_process:
-        # Имя таблицы делаем по имени файла (без расширения)
-        file_name_clean = os.path.splitext(os.path.basename(file_path))[0]
-        table_name = file_name_clean.strip().replace(" ", "_").replace("-", "_").lower()
-
-        print(f"Обработка файла: {os.path.basename(file_path)} -> Таблица: {table_name}")
-
-        excel_file = pd.ExcelFile(file_path)
-
-        # Переменная, чтобы перезаписать таблицу при первом листе и дописывать при следующих
-        is_first_sheet = True
-        total_rows = 0
-
-        for sheet_name in excel_file.sheet_names:
-            # Загружаем данные листа
-            df = pd.read_excel(file_path, sheet_name=sheet_name)
-
-            # Если лист пустой, пропускаем его
-            if df.empty:
-                continue
-
-            # Очищаем заголовки колонок
-            df.columns = [
-                str(c).strip().replace(" ", "_").replace(".", "") for c in df.columns
-            ]
-
-            # Режим записи: replace для первого листа (чтобы очистить старую таблицу),
-            # append для последующих листов этого же файла
-            if_exists_mode = "replace" if is_first_sheet else "append"
-
-            # Записываем в БД
-            df.to_sql(table_name, conn, if_exists=if_exists_mode, index=False)
-            is_first_sheet = False
-            total_rows += len(df)
-
-        print(
-            f"  -> Таблица '{table_name}' успешно создана/обновлена. Всего строк: {total_rows}"
-        )
-
-    # Закрываем соединение
-    conn.close()
-    print(f"\nГотово! База данных с 3 таблицами сохранена в: {os.path.abspath(db_name)}")
+    with sqlite3.connect(DB_PATH) as conn:
+        pd.read_excel(TABLES_DIR / "VUZ.xlsx").to_sql("vuz", conn, index=False)
+        pd.read_excel(TABLES_DIR / "grntirub.xlsx").to_sql("grntirub", conn, index=False)
+        # суррогатный ключ id нужен для изменения/удаления записей и для групп;
+        # составной ключ (codvuz, type, regnumber) в исходных данных не уникален
+        conn.executescript(f"""
+            CREATE TABLE vyst_mo (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                codvuz INTEGER,
+                {", ".join(f"{f} TEXT" for f in fields)}
+            );
+            CREATE TABLE nir_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                filter_desc TEXT
+            );
+            CREATE TABLE nir_group_items (
+                group_id INTEGER REFERENCES nir_groups(id) ON DELETE CASCADE,
+                nir_id INTEGER REFERENCES vyst_mo(id) ON DELETE CASCADE,
+                included INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (group_id, nir_id)
+            );
+        """)
+        nir.to_sql("vyst_mo", conn, if_exists="append", index=False)
+        for table in ("vuz", "grntirub", "vyst_mo"):
+            (n,) = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+            print(f"{table}: {n} строк")
+    print(f"БД сохранена: {DB_PATH}")
 
 
 if __name__ == "__main__":
-    excel_to_sqlite(EXCEL_DIR, DB_NAME)
+    convert()
