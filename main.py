@@ -13,13 +13,67 @@ st.session_state.setdefault("page", "Данные")
 ROW_HEIGHT = 35
 
 
+def column_config(table):
+    # наименование НИР длинное (в среднем ~120 символов), поэтому столбец шире остальных
+    return {
+        c: st.column_config.Column(l, width=800 if c == "subject" else None)
+        for c, l in db.LABELS[table].items()
+    }
+
+
+GRNTI_LABEL = "Код ГРНТИ (до двух кодов, вводите только цифры)"
+GRNTI_FILTER_LABEL = "Код ГРНТИ начинается с"
+
+
+def grnti_mask():
+    """Маска ввода ГРНТИ: точки (ХХ.ХХ.ХХ) и разделитель кодов «, » ставятся сами.
+    Скрипт ставит один обработчик на документ, поля находит по подписи."""
+    st.html(
+        f"""<script>
+        (() => {{
+          if (window.grntiMask) return;
+          window.grntiMask = true;
+          const maxCodes = {{{GRNTI_LABEL!r}: 2, {GRNTI_FILTER_LABEL!r}: 1}};
+          const format = (value, max) => {{
+            const codes = [];
+            for (const part of value.split(/[,;]/)) {{
+              let d = part.replace(/\\D/g, "");
+              while (d.length > 6) {{ codes.push(d.slice(0, 6)); d = d.slice(6); }}
+              codes.push(d);
+            }}
+            return codes.slice(0, max)
+              .map(d => (d.match(/.{{1,2}}/g) || []).join("."))
+              .join(", ");
+          }};
+          const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+          document.addEventListener("input", e => {{
+            const el = e.target;
+            const max = maxCodes[el.getAttribute && el.getAttribute("aria-label")];
+            if (!max) return;
+            const formatted = format(el.value, max);
+            if (formatted === el.value) return;
+            // курсор остаётся после того же количества цифр
+            const digits = el.value.slice(0, el.selectionStart).replace(/\\D/g, "").length;
+            let pos = 0;
+            for (let n = 0; pos < formatted.length && n < digits; pos++)
+              if (/\\d/.test(formatted[pos])) n++;
+            setValue.call(el, formatted);
+            el.setSelectionRange(pos, pos);
+            el.dispatchEvent(new Event("input", {{ bubbles: true }}));
+          }}, true);
+        }})();
+        </script>""",
+        unsafe_allow_javascript=True,
+    )
+
+
 def show(df, table, **kwargs):
     labels = db.LABELS[table]
     return st.dataframe(
         df,
         hide_index=True,
         column_order=list(labels),
-        column_config={c: st.column_config.Column(l) for c, l in labels.items()},
+        column_config=column_config(table),
         **kwargs,
     )
 
@@ -47,7 +101,7 @@ def record_dialog(rec=None):
         "regnumber": st.text_input("Рег. №", rec.get("regnumber") or ""),
         "subject": st.text_area("Наименование НИР", rec.get("subject") or ""),
         "grnti": st.text_input(
-            "Код ГРНТИ (ХХ.ХХ.ХХ, через запятую)", rec.get("grnti") or ""
+            GRNTI_LABEL, rec.get("grnti") or "", placeholder="ХХ.ХХ.ХХ, ХХ.ХХ.ХХ"
         ),
         "bossname": st.text_input("Руководитель", rec.get("bossname") or ""),
         "bosstitle": st.text_input("Должность", rec.get("bosstitle") or ""),
@@ -72,7 +126,9 @@ def record_dialog(rec=None):
 
 def suggest_group_name(flt, picked, existing):
     """Название новой группы по условиям фильтра и дате, например «Владивосток, экспонат есть 05.10.2026»."""
-    parts = [v for f in ("region", "oblname", "city") for v in flt.get(f, [])][:3]
+    names = db.vuz_names()
+    parts = [v for f in ("region", "oblname", "city") for v in flt.get(f, [])]
+    parts = (parts + [names[v] for v in flt.get("codvuz", [])])[:3]
     if flt.get("grnti"):
         parts.append(f"ГРНТИ {flt['grnti']}")
     if flt.get("exhitype"):
@@ -110,26 +166,31 @@ def group_dialog(ids, flt, picked):
 @st.dialog("Фильтр")
 def filter_dialog():
     flt = st.session_state.filters
-    geo_fields = ("region", "oblname", "city")
+    geo_fields = db.GEO_FIELDS
     geo = db.get_table("vuz")[list(geo_fields)].dropna()
+    names = db.vuz_names()
+    labels = {**db.LABELS["vuz"], "codvuz": "Вуз"}
     p = f"flt{st.session_state.flt_n}"  # новые ключи при каждом открытии формы
     sel = {f: st.session_state.get(f"{p}_{f}", flt.get(f, [])) for f in geo_fields}
     new = {}
     for f in geo_fields:
-        # варианты поля ограничены значениями, выбранными в двух других полях
+        # варианты поля ограничены значениями, выбранными в остальных полях
         rows = geo
         for g in geo_fields:
             if g != f and sel[g]:
                 rows = rows[rows[g].isin(sel[g])]
-        options = sorted(rows[f].unique())
+        options = rows[f].drop_duplicates().sort_values().tolist()
         new[f] = st.multiselect(
-            db.LABELS["vuz"][f],
+            labels[f],
             options,
             [v for v in sel[f] if v in options],
+            format_func=(lambda c: f"{c} — {names[c]}") if f == "codvuz" else str,
             placeholder="Все",
             key=f"{p}_{f}",
         )
-    new["grnti"] = st.text_input("Код ГРНТИ начинается с", flt.get("grnti", "")).strip()
+    new["grnti"] = st.text_input(
+        GRNTI_FILTER_LABEL, flt.get("grnti", ""), placeholder="ХХ.ХХ.ХХ"
+    ).strip()
     new["exhitype"] = st.multiselect(
         "Экспонат",
         list(db.EXHIBIT_TYPES),
@@ -192,7 +253,7 @@ def data_page():
 
     flt = st.session_state.filters
     df = db.apply_filter(df, flt)
-    sort = st.session_state.get("sort", "по возрастанию")
+    sort = st.session_state.get("sort", "без сортировки")
     if sort != "без сортировки":
         df = db.sort_by_key(df, ascending=sort == "по возрастанию")
     df = df.reset_index(drop=True)
@@ -230,7 +291,7 @@ def data_page():
     st.radio(
         "Сортировка по ключу (код вуза + форма + рег. №)",
         ["без сортировки", "по возрастанию", "по убыванию"],
-        index=1,
+        index=0,
         horizontal=True,
         key="sort",
     )
@@ -279,7 +340,7 @@ def groups_page():
         column_order=["included", *db.LABELS["vyst_mo"]],
         column_config={
             "included": st.column_config.CheckboxColumn("В выставку"),
-            **{c: st.column_config.Column(l) for c, l in db.LABELS["vyst_mo"].items()},
+            **column_config("vyst_mo"),
         },
         disabled=list(db.LABELS["vyst_mo"]),
     )
@@ -314,3 +375,4 @@ if st.session_state.page == "Данные":
     data_page()
 else:
     groups_page()
+grnti_mask()

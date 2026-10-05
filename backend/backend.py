@@ -12,12 +12,12 @@ LABELS = {
         "codvuz": "Код вуза",
         "type": "Форма НИР",
         "regnumber": "Рег. №",
-        "shortname": "Вуз",
+        "exhitype": "Экспонат",
         "subject": "Наименование НИР",
         "grnti": "Код ГРНТИ",
+        "shortname": "Вуз",
         "bossname": "Руководитель",
         "bosstitle": "Должность",
-        "exhitype": "Экспонат",
         "vystavki": "Информация о выставке",
         "exponat": "Название экспоната",
     },
@@ -70,8 +70,17 @@ def split_grnti(value):
     return [p for p in re.split(r"[;,\s]+", str(value or "")) if p]
 
 
+GEO_FIELDS = ("region", "oblname", "city", "codvuz")  # поля фильтра из справочника вузов
+
+
+def vuz_names():
+    """{код вуза: сокращённое наименование}"""
+    vuz = get_table("vuz")
+    return dict(zip(vuz["codvuz"], vuz["shortname"]))
+
+
 def apply_filter(df, flt):
-    geo = {k: v for k, v in flt.items() if k in ("region", "oblname", "city") and v}
+    geo = {k: v for k, v in flt.items() if k in GEO_FIELDS and v}
     if geo:
         vuz = get_table("vuz")
         for field, values in geo.items():
@@ -93,6 +102,7 @@ def describe_filter(flt):
         "region": "Федеральный округ",
         "oblname": "Субъект РФ",
         "city": "Город",
+        "codvuz": "Вуз",
         "grnti": "Код ГРНТИ начинается с",
         "exhitype": "Экспонат",
     }
@@ -100,6 +110,9 @@ def describe_filter(flt):
     for key, value in flt.items():
         if key == "exhitype":
             value = [EXHIBIT_TYPES[v] for v in value]
+        if key == "codvuz":
+            names = vuz_names()
+            value = [names[v] for v in value]
         parts.append(
             f"{labels[key]}: {value if isinstance(value, str) else ', '.join(value)}"
         )
