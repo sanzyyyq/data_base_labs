@@ -79,6 +79,17 @@ def vuz_names():
     return dict(zip(vuz["codvuz"], vuz["shortname"]))
 
 
+def rubric_names():
+    """{код рубрики ГРНТИ: «XX - название рубрики»}"""
+    rub = get_table("grntirub")
+    return {c: f"{c:02d} - {r}" for c, r in zip(rub["codrub"], rub["rubrika"])}
+
+
+def record_rubrics(grnti):
+    """Рубрики (первые две цифры) кодов ГРНТИ записи."""
+    return {int(c[:2]) for c in split_grnti(grnti) if re.match(r"\d{2}\.", c)}
+
+
 def apply_filter(df, flt):
     geo = {k: v for k, v in flt.items() if k in GEO_FIELDS and v}
     if geo:
@@ -86,10 +97,9 @@ def apply_filter(df, flt):
         for field, values in geo.items():
             vuz = vuz[vuz[field].isin(values)]
         df = df[df["codvuz"].astype(int).isin(vuz["codvuz"])]
-    if flt.get("grnti"):
-        code = flt["grnti"]
+    if flt.get("rubrics"):
         df = df[
-            df["grnti"].apply(lambda v: any(c.startswith(code) for c in split_grnti(v)))
+            df["grnti"].apply(lambda v: bool(record_rubrics(v) & set(flt["rubrics"])))
         ]
     if flt.get("exhitype"):
         df = df[df["exhitype"].isin(flt["exhitype"])]
@@ -103,7 +113,7 @@ def describe_filter(flt):
         "oblname": "Субъект РФ",
         "city": "Город",
         "codvuz": "Вуз",
-        "grnti": "Код ГРНТИ начинается с",
+        "rubrics": "Рубрика ГРНТИ",
         "exhitype": "Экспонат",
     }
     parts = []
@@ -112,6 +122,9 @@ def describe_filter(flt):
             value = [EXHIBIT_TYPES[v] for v in value]
         if key == "codvuz":
             names = vuz_names()
+            value = [names[v] for v in value]
+        if key == "rubrics":
+            names = rubric_names()
             value = [names[v] for v in value]
         parts.append(
             f"{labels[key]}: {value if isinstance(value, str) else ', '.join(value)}"

@@ -22,7 +22,6 @@ def column_config(table):
 
 
 GRNTI_LABEL = "Код ГРНТИ (до двух кодов, вводите только цифры)"
-GRNTI_FILTER_LABEL = "Код ГРНТИ начинается с"
 
 
 def grnti_mask():
@@ -33,7 +32,7 @@ def grnti_mask():
         (() => {{
           if (window.grntiMask) return;
           window.grntiMask = true;
-          const maxCodes = {{{GRNTI_LABEL!r}: 2, {GRNTI_FILTER_LABEL!r}: 1}};
+          const maxCodes = {{{GRNTI_LABEL!r}: 2}};
           const format = (value, max) => {{
             const codes = [];
             for (const part of value.split(/[,;]/)) {{
@@ -129,8 +128,8 @@ def suggest_group_name(flt, picked, existing):
     names = db.vuz_names()
     parts = [v for f in ("region", "oblname", "city") for v in flt.get(f, [])]
     parts = (parts + [names[v] for v in flt.get("codvuz", [])])[:3]
-    if flt.get("grnti"):
-        parts.append(f"ГРНТИ {flt['grnti']}")
+    if flt.get("rubrics"):
+        parts.append("ГРНТИ " + ", ".join(f"{r:02d}" for r in flt["rubrics"]))
     if flt.get("exhitype"):
         parts.append(
             "экспонат " + ", ".join(db.EXHIBIT_TYPES[e] for e in flt["exhitype"])
@@ -188,9 +187,14 @@ def filter_dialog():
             placeholder="Все",
             key=f"{p}_{f}",
         )
-    new["grnti"] = st.text_input(
-        GRNTI_FILTER_LABEL, flt.get("grnti", ""), placeholder="ХХ.ХХ.ХХ"
-    ).strip()
+    rubrics = db.rubric_names()
+    new["rubrics"] = st.multiselect(
+        "Рубрика ГРНТИ",
+        list(rubrics),
+        flt.get("rubrics", []),
+        format_func=rubrics.get,
+        placeholder="Все",
+    )
     new["exhitype"] = st.multiselect(
         "Экспонат",
         list(db.EXHIBIT_TYPES),
