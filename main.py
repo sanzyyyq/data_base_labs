@@ -45,6 +45,8 @@ def grnti_mask():
         [class*="st-key-gopen_"] * {{ width: 100% !important; height: 100% !important; }}
         [class*="st-key-gopen_"] button {{ opacity: 0; cursor: pointer; }}
         [class*="st-key-gsel_"] {{ position: relative; z-index: 2; }}
+        [class*="st-key-gtop_"] {{ overflow: hidden !important; }}
+        [class*="st-key-gtop_"] p {{ margin: 0; }}
         .st-key-card input, .st-key-card textarea {{
           color: inherit !important; -webkit-text-fill-color: currentColor !important;
           opacity: 1 !important; cursor: text !important;
@@ -357,14 +359,29 @@ def transfer_dialog(ids):
 
 @st.dialog("Добавить в группу")
 def add_to_group_dialog(ids, current):
-    groups = [g for g in db.get_groups()["name"] if g != current]
-    if not groups:
-        st.info("Других групп нет")
-        return
-    name = st.selectbox("Группа", groups, index=None, placeholder="Выберите группу")
+    existing = db.get_groups()["name"].tolist()
+    groups = [g for g in existing if g != current]
+    target = st.radio(
+        "Куда добавить",
+        ["Существующая группа", "Новая группа"],
+        index=0 if groups else 1,
+        horizontal=True,
+        disabled=not groups,
+    )
+    if target == "Существующая группа":
+        name = st.selectbox("Группа", groups, index=None, placeholder="Выберите группу")
+        exists = False
+    else:
+        name = st.text_input(
+            "Название новой группы", suggest_group_name({}, True, existing)[0]
+        )
+        name = name.strip()
+        exists = name in existing
+        if exists:
+            st.warning("Группа с таким названием уже есть, введите другое")
     st.caption(f"Записей: {len(ids)}")
-    if st.button("Добавить", type="primary", disabled=not name):
-        db.add_to_group(name, "", ids)
+    if st.button("Добавить", type="primary", disabled=not name or exists):
+        db.add_to_group(name, f"Из группы «{current}»", ids)
         st.toast(f"Добавлено в группу «{name}»")
         st.rerun()
 
@@ -648,7 +665,9 @@ def groups_list():
     grid = st.container(height=TABLE_HEIGHT, border=False)
     for g in groups.itertuples():
         card = grid.container(border=True, key=f"gcard_{g.id}")
-        top = card.container(horizontal=True, vertical_alignment="top", wrap=False)
+        top = card.container(
+            horizontal=True, vertical_alignment="top", wrap=False, key=f"gtop_{g.id}"
+        )
         top.checkbox(
             "Выбрать",
             key=f"gsel_{n}_{g.id}",
