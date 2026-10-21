@@ -1,6 +1,10 @@
 ### Обработка данных о выставочных экспонатах (вариант 6)
 
 ##### Запуск
+Установка библиотек:
+```
+pip install -r requirements.txt
+```
 Создание БД `backend/data/database.db` из Excel-файлов в `backend/tables` (существующая база пересоздаётся):
 ```
 python backend/convert.py

@@ -1,6 +1,3 @@
-"""Создаёт БД data/database.db из Excel-файлов в папке tables.
-Запуск: python backend/convert.py (существующая БД будет пересоздана)."""
-
 import re
 import sqlite3
 from pathlib import Path
@@ -10,27 +7,21 @@ import pandas as pd
 BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / "data" / "database.db"
 TABLES_DIR = BASE_DIR / "tables"
-
-
 KEY = ["codvuz", "type", "regnumber"]
 
 
 def next_regnumber(reg):
-    """Рег. № на 1 больше: 002 → 003, Л5 → Л6 (ведущие нули сохраняются)."""
     m = re.fullmatch(r"(.*?)(\d+)(\D*)", reg)
-    if not m:  # в номере нет цифр
+    if not m:
         return reg + "1"
     head, num, tail = m.groups()
     return f"{head}{int(num) + 1:0{len(num)}d}{tail}"
 
 
 def normalize_grnti(value):
-    """Коды ГРНТИ через «; »: «02.61.45,27.35» → «02.61.45; 27.35».
-    Части кода, разделённые запятыми, собираются обратно: «29.19.49;29,19,45» → «29.19.49; 29.19.45».
-    """
     if not isinstance(value, str):
         return value
-    codes, building = [], False  # building — код собирается из частей без точек
+    codes, building = [], False
     for token in re.split(r"[;,\s]+", value.strip()):
         if not token:
             continue
@@ -42,10 +33,21 @@ def normalize_grnti(value):
     return "; ".join(codes)
 
 
+def fix_vuz_codes(nir, vuz):
+    codes = sorted(vuz["codvuz"])
+    names = dict(zip(vuz["codvuz"], vuz["shortname"]))
+    for code in sorted(set(nir["codvuz"]) - set(codes)):
+        new = min(codes, key=lambda c: (abs(c - code), c))
+        rows = nir["codvuz"] == code
+        nir.loc[rows, "codvuz"] = new
+        nir.loc[rows, "shortname"] = names[new]
+        print(
+            f"Вуза с кодом {code} нет в справочнике: код заменён на {new} ({names[new]}), записей: {rows.sum()}"
+        )
+    return nir
+
+
 def make_keys_unique(nir):
-    """Повторяющимся составным ключам (код вуза + форма + рег. №) увеличивает рег. номер
-    на 1, пока ключ не станет уникальным; первая запись с таким ключом остаётся без изменений.
-    """
     taken = set(map(tuple, nir[KEY].values))
     for i in nir.index[nir.duplicated(KEY)]:
         vuz, type_, reg = nir.loc[i, KEY]
@@ -62,33 +64,34 @@ def convert():
     DB_PATH.parent.mkdir(exist_ok=True)
     DB_PATH.unlink(missing_ok=True)
 
+    vuz = pd.read_excel(TABLES_DIR / "VUZ.xlsx")
     nir = pd.read_excel(TABLES_DIR / "Vyst_mo.xlsx", dtype={"regnumber": str})
-    for col in nir.select_dtypes(exclude="number"):  # пробелы по краям текста
+    for col in nir.select_dtypes(exclude="number"):
         nir[col] = nir[col].str.strip()
+    nir = fix_vuz_codes(nir, vuz)
     nir = make_keys_unique(nir)
     nir["grnti"] = nir["grnti"].map(normalize_grnti)
     fields = [c for c in nir.columns if c != "codvuz"]
 
     with sqlite3.connect(DB_PATH) as conn:
-        pd.read_excel(TABLES_DIR / "VUZ.xlsx").to_sql("vuz", conn, index=False)
+        vuz.to_sql("vuz", conn, index=False)
         pd.read_excel(TABLES_DIR / "grntirub.xlsx").to_sql("grntirub", conn, index=False)
-        # суррогатный ключ id нужен для изменения/удаления записей и для групп
         conn.executescript(f"""
             CREATE TABLE vyst_mo (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER PRIMARY KEY,
                 codvuz INTEGER,
                 {", ".join(f"{f} TEXT" for f in fields)},
                 UNIQUE (codvuz, type, regnumber)
             );
             CREATE TABLE nir_groups (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
+                id INTEGER PRIMARY KEY,
+                name TEXT UNIQUE,
                 filter_desc TEXT
             );
             CREATE TABLE nir_group_items (
                 group_id INTEGER REFERENCES nir_groups(id) ON DELETE CASCADE,
                 nir_id INTEGER REFERENCES vyst_mo(id) ON DELETE CASCADE,
-                included INTEGER NOT NULL DEFAULT 0,
+                included INTEGER DEFAULT 0,
                 PRIMARY KEY (group_id, nir_id)
             );
         """)
