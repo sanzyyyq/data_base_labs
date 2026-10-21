@@ -33,6 +33,7 @@ def grnti_mask():
         f"""<style>
         [data-testid="stMainBlockContainer"] {{ padding-top: 1rem; padding-bottom: 1rem; }}
         .st-key-dblclick {{ position: absolute; left: -10000px; }}
+        [data-testid="stHeading"] h3 {{ padding: 0 0 0 1rem; }}
         [id^="gdg-overlay-"] {{ display: none !important; }}
         [data-testid="stHeader"] {{ background: transparent; pointer-events: none; }}
         [data-testid="stHeader"] * {{ pointer-events: none; }}
@@ -262,8 +263,11 @@ def suggest_group_name(flt, picked, existing):
     return name, full
 
 
-@st.dialog("Карточка НИР", width="large")
 def card_dialog(rec):
+    st.dialog(rec.get("subject") or "Карточка НИР", width="large")(card_body)(rec)
+
+
+def card_body(rec):
     def field(col, label, value, area=False):
         widget = col.text_area if area else col.text_input
         kwargs = {"height": 68} if area else {}
@@ -276,7 +280,6 @@ def card_dialog(rec):
     field(c1, "Вуз", f"{rec['codvuz']} — {vuz_name}")
     field(c2, "Форма НИР", f"{rec['type']} — {nir_types.get(rec['type'], '')}")
     field(c3, "Рег. №", rec.get("regnumber"))
-    field(box, "Наименование НИР", rec.get("subject"), area=True)
     c1, c2, c3 = box.columns([2, 2, 1])
     field(c1, "Код ГРНТИ", rec.get("grnti"))
     field(c2, "Руководитель", rec.get("bossname"))
@@ -461,8 +464,11 @@ def scroll_to_row(row):
             if (scrolledAt === null) {{
               sc.addEventListener("wheel", () => (userScrolled = true), {{ once: true }});
             }}
-            if (scrolledAt === null || (tries - scrolledAt > 15 && Math.abs(sc.scrollTop - top) > h)) {{
+            if (scrolledAt === null) {{
               sc.scrollTo({{ top, behavior: "smooth" }});
+              scrolledAt = tries;
+            }} else if (tries - scrolledAt > 15 && Math.abs(sc.scrollTop - top) > h) {{
+              sc.scrollTop = top;
               scrolledAt = tries;
             }} else if (tries - scrolledAt > 40) {{
               clearInterval(timer);
@@ -760,7 +766,7 @@ TABLES = {
 }
 if st.session_state.pop("close_menu", False):
     st.session_state.data_menu = False
-menu = st.container(horizontal=True, gap="xsmall")
+menu = st.container(horizontal=True, gap="xsmall", vertical_alignment="center")
 data_menu = menu.popover(
     "Данные",
     type="primary" if st.session_state.page == "Данные" else "secondary",
@@ -783,6 +789,7 @@ if menu.button(
 ):
     st.session_state.page, st.session_state.open_group = "Группы", None
     st.rerun()
+menu.subheader(TITLE, anchor=False)
 if st.session_state.page == "Данные":
     data_page()
 else:
