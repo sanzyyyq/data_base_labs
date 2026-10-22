@@ -12,7 +12,6 @@ if not db.DB_PATH.exists():
     st.stop()
 st.session_state.setdefault("filters", {})
 st.session_state.setdefault("page", "Данные")
-st.session_state.setdefault("candidates", set())
 ROW_HEIGHT = 35
 TABLE_HEIGHT = 708
 
@@ -145,9 +144,6 @@ def save_menu(
 
 def show(df, table, **kwargs):
     order, config = list(db.LABELS[table]), column_config(table)
-    if "candidate" in df:
-        order = ["candidate", *order]
-        config["candidate"] = st.column_config.CheckboxColumn("Кандидат")
     return st.dataframe(
         df.fillna(""),
         hide_index=True,
@@ -211,13 +207,14 @@ def record_dialog(rec=None):
     )
     new["vystavki"], new["exponat"] = rec.get("vystavki"), rec.get("exponat")
     if new["exhitype"] != "Н":
-        required = " *" if new["exhitype"] == "Е" else ""
         c1, c2 = st.columns(2)
         new["vystavki"] = field(c1, "vystavki").text_area(
-            "Информация о выставке" + required, rec.get("vystavki") or "", height=68
+            "Информация о выставке" + (" *" if new["exhitype"] == "Е" else ""),
+            rec.get("vystavki") or "",
+            height=68,
         )
         new["exponat"] = field(c2, "exponat").text_area(
-            "Название экспоната" + required, rec.get("exponat") or "", height=68
+            "Название экспоната *", rec.get("exponat") or "", height=68
         )
     button, message = st.columns([1, 5], vertical_alignment="center")
     if button.button("Сохранить", type="primary"):
@@ -340,49 +337,32 @@ def group_dialog(ids, flt, picked):
         st.rerun()
 
 
-@st.dialog("Перенос кандидатов в группу")
-def transfer_dialog(ids):
-    groups = db.get_groups()["name"].tolist()
+@st.dialog("Добавить в группу")
+def add_to_group_dialog(ids, current):
+    groups = [g for g in db.get_groups()["name"] if g != current]
     if not groups:
-        st.info("Групп пока нет. Создайте группу кнопкой «Сохранить группу».")
+        st.info("Других групп нет. Создайте новую группу.")
         return
     name = st.selectbox("Группа", groups, index=None, placeholder="Выберите группу")
-    clear = st.checkbox("Снять отметки после переноса", value=True)
-    st.caption(f"Кандидатов: {len(ids)}")
-    if st.button("Перенести", type="primary", disabled=not name):
-        db.add_to_group(name, "", ids)
-        if clear:
-            st.session_state.candidates.clear()
-        st.toast(f"Перенесено в группу «{name}»")
+    st.caption(f"Записей: {len(ids)}")
+    if st.button("Добавить", type="primary", disabled=not name):
+        db.add_to_group(name, f"Из группы «{current}»", ids)
+        st.toast(f"Добавлено в группу «{name}»")
         st.rerun()
 
 
-@st.dialog("Добавить в группу")
-def add_to_group_dialog(ids, current):
+@st.dialog("Новая группа")
+def new_group_dialog(ids, current):
     existing = db.get_groups()["name"].tolist()
-    groups = [g for g in existing if g != current]
-    target = st.radio(
-        "Куда добавить",
-        ["Существующая группа", "Новая группа"],
-        index=0 if groups else 1,
-        horizontal=True,
-        disabled=not groups,
-    )
-    if target == "Существующая группа":
-        name = st.selectbox("Группа", groups, index=None, placeholder="Выберите группу")
-        exists = False
-    else:
-        name = st.text_input(
-            "Название новой группы", suggest_group_name({}, True, existing)[0]
-        )
-        name = name.strip()
-        exists = name in existing
-        if exists:
-            st.warning("Группа с таким названием уже есть, введите другое")
+    name = st.text_input(
+        "Название новой группы", suggest_group_name({}, True, existing)[0]
+    ).strip()
+    if name in existing:
+        st.warning("Группа с таким названием уже есть, введите другое")
     st.caption(f"Записей: {len(ids)}")
-    if st.button("Добавить", type="primary", disabled=not name or exists):
+    if st.button("Создать", type="primary", disabled=not name or name in existing):
         db.add_to_group(name, f"Из группы «{current}»", ids)
-        st.toast(f"Добавлено в группу «{name}»")
+        st.toast(f"Создана группа «{name}»")
         st.rerun()
 
 
@@ -505,12 +485,8 @@ def data_page():
         show(df, table)
         return
 
-    cands = st.session_state.candidates
-    cands &= set(df["id"])
-    if st.session_state.pop("open_transfer", False):
-        transfer_dialog(sorted(cands))
     flt = st.session_state.filters
-    df = db.apply_filter(df, flt).assign(candidate=lambda d: d["id"].isin(cands))
+    df = db.apply_filter(df, flt)
     sort = st.session_state.get("sort", "без сортировки")
     if sort != "без сортировки":
         df = db.sort_by_key(df, ascending=sort == "по возрастанию")
@@ -533,9 +509,7 @@ def data_page():
             st.toast("Запись сохранена, но не попадает под текущий фильтр")
 
     st.caption(
-        f"Записей: {len(df)}"
-        + (f". Кандидатов: {len(cands)}" if cands else "")
-        + (f". Фильтр: {db.describe_filter(flt)}" if flt else "")
+        f"Записей: {len(df)}" + (f". Фильтр: {db.describe_filter(flt)}" if flt else "")
     )
     event = show(
         df,
@@ -558,11 +532,11 @@ def data_page():
     c.selectbox(
         "Сортировка",
         ["без сортировки", "по возрастанию", "по убыванию"],
-        format_func=lambda v: f"Сортировка: {v}",
+        format_func=lambda v: f"Сортировка по ключу: {v}",
         key="sort",
         label_visibility="collapsed",
         help="По составному ключу: код вуза + форма НИР + рег. №",
-        width=260,
+        width=330,
     )
     if c.button("Добавить", width="stretch"):
         record_dialog()
@@ -576,30 +550,6 @@ def data_page():
         group_dialog(
             (selected if len(selected) else df)["id"].tolist(), flt, len(selected) > 0
         )
-    if st.session_state.pop("close_cand", False):
-        st.session_state.cand_menu = False
-    menu = c.popover("Кандидаты", width="stretch", key="cand_menu", on_change="rerun")
-    ids = set(selected["id"])
-    actions = [
-        ("Отметить выделенные", selected.empty, lambda: cands.update(ids)),
-        (
-            "Снять отметку с выделенных",
-            selected.empty,
-            lambda: cands.difference_update(ids),
-        ),
-        ("Снять все отметки", not cands, cands.clear),
-        (
-            "Перенести в группу…",
-            not cands,
-            lambda: st.session_state.update(open_transfer=True),
-        ),
-    ]
-    for label, disabled, action in actions:
-        if menu.button(label, disabled=disabled, width="stretch"):
-            action()
-            st.session_state.close_cand = True
-            st.rerun()
-
     if scroll_row is not None:
         scroll_to_row(scroll_row)
 
@@ -675,9 +625,7 @@ def groups_list():
             width="content",
         )
         top.markdown(f"**{g.name}**")
-        card.caption(
-            f"НИР: {g.n} · В выставку: {g.n_included} · Условия отбора: {g.filter_desc}"
-        )
+        card.caption(f"НИР: {g.n} · Условия отбора: {g.filter_desc}")
         if card.button("Открыть", key=f"gopen_{g.id}"):
             st.session_state.open_group = int(g.id)
             st.session_state.groups_n = n + 1
@@ -719,17 +667,17 @@ def group_view(gid):
         st.session_state.open_group = None
         st.rerun()
     group = groups.loc[gid]
-    st.caption(f"Группа «{group['name']}». Условия отбора: {group['filter_desc']}")
     items = db.get_group_items(gid)
+    st.caption(
+        f"Записей: {len(items)}. "
+        f"Группа «{group['name']}». Условия отбора: {group['filter_desc']}"
+    )
     event = st.dataframe(
         items.fillna(""),
         hide_index=True,
         key=f"group_{gid}_{st.session_state.get('group_n', 0)}",
-        column_order=["included", *db.LABELS["vyst_mo"]],
-        column_config={
-            "included": st.column_config.CheckboxColumn("В выставку"),
-            **column_config("vyst_mo"),
-        },
+        column_order=list(db.LABELS["vyst_mo"]),
+        column_config=column_config("vyst_mo"),
         on_select="rerun",
         selection_mode="multi-row",
         height=TABLE_HEIGHT,
@@ -741,30 +689,25 @@ def group_view(gid):
     if c.button("К списку групп", width="stretch"):
         st.session_state.open_group = None
         st.rerun()
-    for label, mark in (("В выставку", True), ("Убрать из выставки", False)):
-        if c.button(label, disabled=chosen.empty, width="stretch"):
-            db.save_marks(gid, {rec_id: mark for rec_id in chosen["id"]})
-            st.rerun()
     if c.button("Карточка НИР", disabled=len(chosen) != 1, width="stretch"):
         card_dialog(
             {k: None if v != v else v for k, v in chosen.iloc[0].to_dict().items()}
         )
     if c.button("Добавить в группу", disabled=chosen.empty, width="stretch"):
         add_to_group_dialog(chosen["id"].tolist(), group["name"])
+    if c.button("Создать новую группу", disabled=chosen.empty, width="stretch"):
+        new_group_dialog(chosen["id"].tolist(), group["name"])
     if c.button("Убрать из группы", disabled=chosen.empty, width="stretch"):
         remove_items_dialog(gid, chosen)
-    table = items.assign(included=items["included"].map({True: "да", False: "нет"}))
     save_menu(
         c,
         "Сохранить список",
-        table[["included", *db.LABELS["vyst_mo"]]].rename(
-            columns={**db.LABELS["vyst_mo"], "included": "В выставку"}
-        ),
+        items[list(db.LABELS["vyst_mo"])].rename(columns=db.LABELS["vyst_mo"]),
         f"Группа {group['name']}",
         f"Список группы НИР «{group['name']}»",
         [
             f"Условия отбора: {group['filter_desc']}",
-            f"Всего НИР: {len(items)}, включено в выставку: {int(items['included'].sum())}",
+            f"Всего НИР: {len(items)}",
             f"Дата формирования: {date.today():%d.%m.%Y}",
         ],
     )

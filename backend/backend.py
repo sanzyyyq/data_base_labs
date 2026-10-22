@@ -135,12 +135,17 @@ def validate(rec, rec_id=None):
         for f in ("codvuz", "type", "regnumber", "subject", "grnti", "exhitype")
         if not rec.get(f)
     ]
-    if rec.get("exhitype") == "Е":
-        errors += [
-            (("exhitype", f), f"Экспонат есть: заполните поле «{LABELS['vyst_mo'][f]}»")
-            for f in ("vystavki", "exponat")
-            if not rec.get(f)
-        ]
+    required = {"Е": ("vystavki", "exponat"), "П": ("exponat",)}.get(
+        rec.get("exhitype"), ()
+    )
+    errors += [
+        (
+            ("exhitype", f),
+            f"Экспонат {EXHIBIT_TYPES[rec['exhitype']]}: заполните поле «{LABELS['vyst_mo'][f]}»",
+        )
+        for f in required
+        if not rec.get(f)
+    ]
     if errors:
         return errors
     with connect() as conn:
@@ -249,7 +254,6 @@ PDF_WIDTHS = {
     "Должность": 2,
     "Код ГРНТИ": 1.6,
     "Вуз": 1.6,
-    "В выставку": 1.8,
     "Экспонат": 1.8,
     "Форма НИР": 1.2,
 }
@@ -331,8 +335,7 @@ def export(df, fmt, title, notes=()):
 
 def get_groups():
     return query(
-        "SELECT g.id, g.name, g.filter_desc, COUNT(i.nir_id) AS n, "
-        "COALESCE(SUM(i.included), 0) AS n_included "
+        "SELECT g.id, g.name, g.filter_desc, COUNT(i.nir_id) AS n "
         "FROM nir_groups g LEFT JOIN nir_group_items i ON i.group_id = g.id "
         "GROUP BY g.id ORDER BY g.name"
     )
@@ -355,11 +358,10 @@ def add_to_group(name, filter_desc, nir_ids):
 
 def get_group_items(group_id):
     df = query(
-        "SELECT v.*, i.included FROM nir_group_items i JOIN vyst_mo v ON v.id = i.nir_id "
+        "SELECT v.* FROM nir_group_items i JOIN vyst_mo v ON v.id = i.nir_id "
         "WHERE i.group_id = ?",
         (group_id,),
     )
-    df["included"] = df["included"].astype(bool)
     return sort_by_key(df)
 
 
@@ -373,11 +375,9 @@ def merge_groups(source_ids, name, filter_desc):
             "SELECT id FROM nir_groups WHERE name = ?", (name,)
         ).fetchone()
         conn.execute(
-            "INSERT INTO nir_group_items (group_id, nir_id, included) "
-            "SELECT ?, nir_id, MAX(included) FROM nir_group_items "
-            f"WHERE group_id IN ({', '.join('?' * len(source_ids))}) AND group_id != ? "
-            "GROUP BY nir_id "
-            "ON CONFLICT (group_id, nir_id) DO UPDATE SET included = MAX(included, excluded.included)",
+            "INSERT OR IGNORE INTO nir_group_items (group_id, nir_id) "
+            "SELECT DISTINCT ?, nir_id FROM nir_group_items "
+            f"WHERE group_id IN ({', '.join('?' * len(source_ids))}) AND group_id != ?",
             (target, *map(int, source_ids), target),
         )
     return target
@@ -388,12 +388,4 @@ def remove_from_group(group_id, nir_ids):
         conn.executemany(
             "DELETE FROM nir_group_items WHERE group_id = ? AND nir_id = ?",
             [(group_id, int(i)) for i in nir_ids],
-        )
-
-
-def save_marks(group_id, marks):
-    with connect() as conn:
-        conn.executemany(
-            "UPDATE nir_group_items SET included = ? WHERE group_id = ? AND nir_id = ?",
-            [(int(v), group_id, int(k)) for k, v in marks.items()],
         )

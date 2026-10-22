@@ -91,7 +91,6 @@ def convert():
             CREATE TABLE nir_group_items (
                 group_id INTEGER REFERENCES nir_groups(id) ON DELETE CASCADE,
                 nir_id INTEGER REFERENCES vyst_mo(id) ON DELETE CASCADE,
-                included INTEGER DEFAULT 0,
                 PRIMARY KEY (group_id, nir_id)
             );
         """)
