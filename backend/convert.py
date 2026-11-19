@@ -86,7 +86,8 @@ def convert():
             CREATE TABLE nir_groups (
                 id INTEGER PRIMARY KEY,
                 name TEXT UNIQUE,
-                filter_desc TEXT
+                filter_desc TEXT,
+                filters TEXT
             );
             CREATE TABLE nir_group_items (
                 group_id INTEGER REFERENCES nir_groups(id) ON DELETE CASCADE,

@@ -332,7 +332,7 @@ def group_dialog(ids, flt, picked):
     if name in existing:
         st.warning("Группа с таким названием уже есть, введите другое")
     if st.button("Сохранить", type="primary", disabled=not name or name in existing):
-        db.add_to_group(name, filter_desc, ids)
+        db.add_to_group(name, filter_desc, ids, flt)
         st.toast("Сохранено")
         st.rerun()
 
@@ -352,7 +352,7 @@ def add_to_group_dialog(ids, current):
 
 
 @st.dialog("Новая группа")
-def new_group_dialog(ids, current):
+def new_group_dialog(ids, current, flt):
     existing = db.get_groups()["name"].tolist()
     name = st.text_input(
         "Название новой группы", suggest_group_name({}, True, existing)[0]
@@ -361,16 +361,19 @@ def new_group_dialog(ids, current):
         st.warning("Группа с таким названием уже есть, введите другое")
     st.caption(f"Записей: {len(ids)}")
     if st.button("Создать", type="primary", disabled=not name or name in existing):
-        db.add_to_group(name, f"Из группы «{current}»", ids)
+        db.add_to_group(name, f"Из группы «{current}»", ids, flt)
         st.toast(f"Создана группа «{name}»")
         st.rerun()
 
 
 @st.dialog("Фильтр")
-def filter_dialog():
-    flt = st.session_state.filters
+def filter_dialog(key, flt, records=None):
     geo = db.get_table("vuz")[list(db.GEO_FIELDS)].dropna()
-    nir = db.get_table("vyst_mo")[["codvuz", "grnti", "exhitype"]]
+    nir = (db.get_table("vyst_mo") if records is None else records)[
+        ["codvuz", "grnti", "exhitype"]
+    ]
+    if records is not None:
+        geo = geo[geo["codvuz"].isin(nir["codvuz"])]
     nir = nir.assign(rubrics=nir["grnti"].apply(lambda v: sorted(db.record_rubrics(v))))
     nir = nir.explode("rubrics").merge(geo, on="codvuz")
     nir_fields = ("rubrics", "exhitype")
@@ -412,10 +415,10 @@ def filter_dialog():
         )
     c = st.container(horizontal=True, gap="xsmall")
     if c.button("Применить", type="primary"):
-        st.session_state.filters = {k: v for k, v in new.items() if v}
+        st.session_state[key] = {k: v for k, v in new.items() if v}
         st.rerun()
     if c.button("Сбросить фильтр"):
-        st.session_state.filters = {}
+        st.session_state[key] = {}
         st.rerun()
 
 
@@ -528,7 +531,7 @@ def data_page():
     c = st.container(horizontal=True, gap="xsmall")
     if c.button("Фильтр", width="stretch"):
         st.session_state.flt_n = st.session_state.get("flt_n", 0) + 1
-        filter_dialog()
+        filter_dialog("filters", st.session_state.filters)
     c.selectbox(
         "Сортировка",
         ["без сортировки", "по возрастанию", "по убыванию"],
@@ -628,6 +631,7 @@ def groups_list():
         card.caption(f"НИР: {g.n} · Условия отбора: {g.filter_desc}")
         if card.button("Открыть", key=f"gopen_{g.id}"):
             st.session_state.open_group = int(g.id)
+            st.session_state.pop(f"gflt_{g.id}", None)
             st.session_state.groups_n = n + 1
             st.rerun()
     selected = groups[
@@ -667,15 +671,19 @@ def group_view(gid):
         st.session_state.open_group = None
         st.rerun()
     group = groups.loc[gid]
-    items = db.get_group_items(gid)
+    group_flt = db.load_filter(group["filters"])
+    all_items = db.get_group_items(gid)
+    flt = st.session_state.get(f"gflt_{gid}", {})
+    items = db.apply_filter(all_items, flt).reset_index(drop=True)
     st.caption(
-        f"Записей: {len(items)}. "
-        f"Группа «{group['name']}». Условия отбора: {group['filter_desc']}"
+        f"Записей: {len(items)}"
+        + (f" из {len(all_items)}. Фильтр: {db.describe_filter(flt)}" if flt else "")
+        + f". Группа «{group['name']}». Условия отбора: {group['filter_desc']}"
     )
     event = st.dataframe(
         items.fillna(""),
         hide_index=True,
-        key=f"group_{gid}_{st.session_state.get('group_n', 0)}",
+        key=f"group_{gid}_{st.session_state.get('group_n', 0)}_{hash(repr(flt))}",
         column_order=list(db.LABELS["vyst_mo"]),
         column_config=column_config("vyst_mo"),
         on_select="rerun",
@@ -689,6 +697,9 @@ def group_view(gid):
     if c.button("К списку групп", width="stretch"):
         st.session_state.open_group = None
         st.rerun()
+    if c.button("Фильтр", width="stretch"):
+        st.session_state.flt_n = st.session_state.get("flt_n", 0) + 1
+        filter_dialog(f"gflt_{gid}", flt or group_flt, all_items)
     if c.button("Карточка НИР", disabled=len(chosen) != 1, width="stretch"):
         card_dialog(
             {k: None if v != v else v for k, v in chosen.iloc[0].to_dict().items()}
@@ -696,7 +707,7 @@ def group_view(gid):
     if c.button("Добавить в группу", disabled=chosen.empty, width="stretch"):
         add_to_group_dialog(chosen["id"].tolist(), group["name"])
     if c.button("Создать новую группу", disabled=chosen.empty, width="stretch"):
-        new_group_dialog(chosen["id"].tolist(), group["name"])
+        new_group_dialog(chosen["id"].tolist(), group["name"], flt or group_flt)
     if c.button("Убрать из группы", disabled=chosen.empty, width="stretch"):
         remove_items_dialog(gid, chosen)
     save_menu(
@@ -707,6 +718,7 @@ def group_view(gid):
         f"Список группы НИР «{group['name']}»",
         [
             f"Условия отбора: {group['filter_desc']}",
+            *([f"Фильтр: {db.describe_filter(flt)}"] if flt else []),
             f"Всего НИР: {len(items)}",
             f"Дата формирования: {date.today():%d.%m.%Y}",
         ],

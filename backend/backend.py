@@ -1,3 +1,4 @@
+import json
 import re
 import sqlite3
 from io import BytesIO
@@ -335,17 +336,25 @@ def export(df, fmt, title, notes=()):
 
 def get_groups():
     return query(
-        "SELECT g.id, g.name, g.filter_desc, COUNT(i.nir_id) AS n "
+        "SELECT g.id, g.name, g.filter_desc, g.filters, COUNT(i.nir_id) AS n "
         "FROM nir_groups g LEFT JOIN nir_group_items i ON i.group_id = g.id "
         "GROUP BY g.id ORDER BY g.name"
     )
 
 
-def add_to_group(name, filter_desc, nir_ids):
+def load_filter(filters):
+    return json.loads(filters) if isinstance(filters, str) else {}
+
+
+def dump_filter(flt):
+    return json.dumps(flt, ensure_ascii=False, default=int)
+
+
+def add_to_group(name, filter_desc, nir_ids, flt=None):
     with connect() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO nir_groups (name, filter_desc) VALUES (?, ?)",
-            (name, filter_desc),
+            "INSERT OR IGNORE INTO nir_groups (name, filter_desc, filters) VALUES (?, ?, ?)",
+            (name, filter_desc, dump_filter(flt or {})),
         )
         (group_id,) = conn.execute(
             "SELECT id FROM nir_groups WHERE name = ?", (name,)
@@ -365,11 +374,27 @@ def get_group_items(group_id):
     return sort_by_key(df)
 
 
+def merge_filters(filters):
+    return {
+        k: sorted(set().union(*(f[k] for f in filters)))
+        for k in filters[0]
+        if all(k in f for f in filters)
+    }
+
+
 def merge_groups(source_ids, name, filter_desc):
+    source_ids = [int(i) for i in source_ids]
     with connect() as conn:
+        filters = [
+            load_filter(f)
+            for (f,) in conn.execute(
+                f"SELECT filters FROM nir_groups WHERE id IN ({', '.join('?' * len(source_ids))})",
+                source_ids,
+            )
+        ]
         conn.execute(
-            "INSERT OR IGNORE INTO nir_groups (name, filter_desc) VALUES (?, ?)",
-            (name, filter_desc),
+            "INSERT OR IGNORE INTO nir_groups (name, filter_desc, filters) VALUES (?, ?, ?)",
+            (name, filter_desc, dump_filter(merge_filters(filters))),
         )
         (target,) = conn.execute(
             "SELECT id FROM nir_groups WHERE name = ?", (name,)
@@ -378,7 +403,7 @@ def merge_groups(source_ids, name, filter_desc):
             "INSERT OR IGNORE INTO nir_group_items (group_id, nir_id) "
             "SELECT DISTINCT ?, nir_id FROM nir_group_items "
             f"WHERE group_id IN ({', '.join('?' * len(source_ids))}) AND group_id != ?",
-            (target, *map(int, source_ids), target),
+            (target, *source_ids, target),
         )
     return target
 
